@@ -1,0 +1,189 @@
+// Rubinstein model of Ranvier Node's action potentials as in
+// Rubinstein JT (1995) Biophys J 68: 779-785.
+// Mino H, Rubinstein JT, White JA (2002) Ann Biomed Eng 30: 578-587.
+// Bruce IC (2007) Ann Biomed Eng 35: 315-318; 
+
+// Voltage is shifted so that resting voltage = 0 mV (the reversal of the leak)
+
+// This script simulates 1000 sweeps per stimulus and calculates
+// firing efficiency, mean firing time and firing time variance
+// 100 (nsim) simultaneous sweeps, 10 times
+// Lines 69, 109, 110, 162 and 163 are intended to make a voltage trace
+// It is advisable to reduce nsim before uncommenting them
+//
+// Coupled activation particles, 8-state Na channel
+// Markov Chain modeling (Chow&White algorithm)
+
+stacksize('max');
+nsim=100;
+gNa=0.02569*265; //mS/cm2
+ENa=144; //mV
+Cm=0.0000714*265; Rm=1953.49/265;
+Tstop=1; dt=0.001; //ms
+Idel=0; Idur=0.1; //µA, ms, ms
+threshold=80
+points = round(Tstop/dt)
+NNa=1000;  //Number of sodium channels
+
+rand('uniform');
+
+// Each row of this matrix represent one of the 20 possible transitions
+transitions=[-1 1 0 0 0 0 0 0
+1 -1 0 0 0 0 0 0
+0 -1 1 0 0 0 0 0
+0 1 -1 0 0 0 0 0
+0 0 -1 1 0 0 0 0
+0 0 1 -1 0 0 0 0
+-1 0 0 0 1 0 0 0
+1 0 0 0 -1 0 0 0
+0 -1 0 0 0 1 0 0
+0 1 0 0 0 -1 0 0
+0 0 -1 0 0 0 1 0
+0 0 1 0 0 0 -1 0
+0 0 0 -1 0 0 0 1
+0 0 0 1 0 0 0 -1
+0 0 0 0 -1 1 0 0
+0 0 0 0 1 -1 0 0
+0 0 0 0 0 -1 1 0
+0 0 0 0 0 1 -1 0
+0 0 0 0 0 0 -1 1
+0 0 0 0 0 0 1 -1]';
+
+currents=[5:0.1:6.5];
+
+Eff=[];
+meanFT=[];
+varFT=[];
+xx=zeros(1,nsim);
+NaNs=[];
+
+
+tic()
+for curr=1:size(currents,'*')
+    Iamp=ones(1,nsim)*currents(curr);
+    firetimes=[];
+    NNaNs=0;
+    for nn=1:10
+        p=1;
+        // Uncomment this only with a small nsim
+        // vrec = zeros(points,nsim);
+        v = 0*ones(1,nsim);
+        alpha_m=1.872*(v-25.41)./(1-exp((25.41-v)/6.06));
+        beta_m=3.973*(21-v)./(1-exp((v-21)/9.41));
+        M=alpha_m./beta_m;
+        beta_h=(22.57)./(1+exp((56-v)/12.5));
+        alpha_h=-0.549*(27.74+v)./(1-exp((v+27.74)/9.06));
+        H=alpha_h./beta_h;
+        //calculation of steady state at t=0
+        statesum=(1+H).*(1+M)^3;
+        states=round(NNa*[ones(1,nsim);3*M;3*M.^2;M.^3;H;3*M.*H;3*M.^(2).*H;M^(3).*H]./(ones(8,1)*statesum));
+        if sum(states,'r')<>ones(1,nsim)*NNa
+            states(1,:)=NNa-sum(states(2:8,:),'r');
+        end
+        rates=[3*alpha_m.*states(1,:)
+        beta_m.*states(2,:)
+        2*alpha_m.*states(2,:)
+        2*beta_m.*states(3,:)
+        alpha_m.*states(3,:)
+        3*beta_m.*states(4,:)
+        alpha_h.*states(1,:)
+        beta_h.*states(5,:)
+        alpha_h.*states(2,:)
+        beta_h.*states(6,:)
+        alpha_h.*states(3,:)
+        beta_h.*states(7,:)
+        alpha_h.*states(4,:)
+        beta_h.*states(8,:)
+        3*alpha_m.*states(5,:)
+        beta_m.*states(6,:)
+        2*alpha_m.*states(6,:)
+        2*beta_m.*states(7,:)
+        alpha_m.*states(7,:)
+        3*beta_m.*states(8,:)];
+        //time of the next transition (one per each simulation)
+        next_ev=-log(1-rand(1,nsim))./sum(rates,'r');
+        firetime=zeros(1,nsim);
+        firing=zeros(1,nsim);
+
+        for t = dt:dt:Tstop
+            //vrec(p,:) = v;  //Uncomment this only with a small nsim
+            //p=p+1;
+            if or(~firing&v>=threshold) then  //detection of action potentials
+                ind=find(v>=threshold&~firing);
+                firetime(ind)=t;
+                firing(ind)=1;
+            end
+
+            Iapp=Iamp*(t>Idel&t<(Idel+Idur));
+            Imemb=-Iapp+gNa.*(v-ENa).*states(8,:)/NNa+v./Rm;
+
+            while or(t>=next_ev)  //the use of while (instead of if) allows more than one transition per time step
+                //ii contains the indices of the simulations in which a transition is going to occur
+                ii=find(t>=next_ev);  
+                dist=cumsum(rates./(ones(20,1)*sum(rates,'r')),'r');
+                ev=rand(1,nsim);
+                for a=ii
+                    xx(a)=min(find(ev(a)<dist(:,a)));
+                end
+                states(:,ii)=states(:,ii)+transitions(:,xx(ii));
+
+                prev_ev=next_ev(ii);
+                alpha_m=1.872*(v-25.41)./(1-exp((25.41-v)/6.06));
+                beta_m=3.973*(21-v)./(1-exp((v-21)/9.41));
+                beta_h=(22.57)./(1+exp((56-v)/12.5));
+                alpha_h=-0.549*(27.74+v)./(1-exp((v+27.74)/9.06));
+
+                rates=[3*alpha_m.*states(1,:)
+                beta_m.*states(2,:)
+                2*alpha_m.*states(2,:)
+                2*beta_m.*states(3,:)
+                alpha_m.*states(3,:)
+                3*beta_m.*states(4,:)
+                alpha_h.*states(1,:)
+                beta_h.*states(5,:)
+                alpha_h.*states(2,:)
+                beta_h.*states(6,:)
+                alpha_h.*states(3,:)
+                beta_h.*states(7,:)
+                alpha_h.*states(4,:)
+                beta_h.*states(8,:)
+                3*alpha_m.*states(5,:)
+                beta_m.*states(6,:)
+                2*alpha_m.*states(6,:)
+                2*beta_m.*states(7,:)
+                alpha_m.*states(7,:)
+                3*beta_m.*states(8,:)];
+                // The next event is calculated from the last event (not from the current time)
+                next_ev(ii)=prev_ev-log(1-rand(1,size(ii,'*')))./sum(rates(:,ii),'r');
+            end
+            v=v-dt*Imemb/Cm;
+        end
+        printf("round %d Iamp %g\n",nn,currents(curr))
+        //clf  //Uncomment this with a small nsim
+        //plot(dt:dt:Tstop,vrec)
+        firetimes=[firetimes firetime];
+        NNaNs=NNaNs + sum(1*(isinf(v)|isnan(v)));
+    end
+    Eff=[Eff;size(find(firetimes<>0),'*')];
+    meanFT=[meanFT;mean(firetimes(find(firetimes<>0)))];
+    if size(find(firetimes<>0),'*')>1 then
+        varFT=[varFT;variance(firetimes(find(firetimes<>0)))];
+    else
+        varFT=[varFT;0];
+    end
+    NaNs=[NaNs;NNaNs];
+end
+realt=toc();
+printf("time = %g\n",realt)
+fprintfMat('EffN-Rb8 CW-N'+string(NNa)+'-dt'+string(dt)+'-'+string(realt)+'s.txt',[currents' Eff meanFT varFT NaNs],'%g\t')
+
+scf(0);
+clf
+subplot(3,1,1)
+plot(currents,Eff)
+subplot(3,1,2)
+plot(currents,meanFT)
+subplot(3,1,3)
+plot(currents,varFT)
+
+
